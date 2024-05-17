@@ -1,0 +1,353 @@
+---
+title: "russell regression"
+author: "Joel Esparza"
+date: "2024-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(tidyverse)
+library(caret)
+#russell <- read.csv('monthly_russell_regression.csv')
+#head(russell)
+#str(russell)
+```
+
+```{r}
+russell <- read.csv('standardized_monthly_russell_regression.csv')
+head(russell)
+str(russell)
+```
+
+```{r}
+russell <- russell %>% rename(proper = `proper.`)
+
+# Convert specified columns to factors with only two levels
+russell <- russell %>%
+  mutate(
+    move_avg_2 = as.factor(ifelse(X2_month_ma > PRC, 1, 0)),
+    move_avg_3 = as.factor(ifelse(X3_month_ma > PRC, 1, 0)),
+    comp_size = as.factor(comp_size),  
+    proper = as.factor(ifelse(proper == "True", 1, 0))
+  )
+```
+
+
+```{r}
+library(corrplot)
+
+# Select only the numeric variables from your dataset
+numeric_data <- russell %>%
+  select_if(is.numeric)
+
+# Calculate the correlation matrix
+correlation_matrix <- cor(na.omit(numeric_data))
+
+
+# Display the correlation matrix in a grid format
+corrplot(correlation_matrix, method = "square", type = "upper", order = "hclust")
+```
+
+
+# Lasso-Regression
+```{r}
+library(tidyverse)
+library(caret)
+library(glmnet)
+
+
+
+russell <- na.omit(russell)
+
+
+# Convert specified columns to factors
+russell[c("comp_size", "proper", "dummy_negative", "dummy_positive", "dummy_total")] <- 
+  lapply(russell[c("comp_size", "proper", "dummy_negative", "dummy_positive", "dummy_total")], 
+         function(x) as.factor(x))
+
+
+# Drop columns you want to exclude
+columns_to_drop <- c("date", "PERMNO", "COMNAM", "SICCD", "TICKER", "SHROUT", "PRC", "BIDLO", "ASKHI", "market_cap", "X1_month_ma", "X2_month_ma", "X3_month_ma", "RETX") 
+russell_ <- russell[, !(names(russell) %in% columns_to_drop)]
+
+# Drop rows with missing values
+russell_clean <- na.omit(russell_)
+
+# Convert russell into a matrix and create dummy variables for character variables
+x <- model.matrix(next_month_return ~ ., russell_clean)[,-1]
+
+# Outcome
+y <- russell_clean$next_month_return
+
+# Set seed
+set.seed(17)
+
+# Create training and test indices using createDataPartition
+train_index <- createDataPartition(y, p = 0.7, list = FALSE)
+
+
+# Subset the data based on the indices
+x_train <- x[train_index, ]
+y_train <- y[train_index]
+x_test <- x[-train_index, ]
+y_test <- y[-train_index]
+
+# Fit Lasso regression model
+fit <- cv.glmnet(x_train, y_train, alpha = 1, type.measure = "mse", nfolds = 5)
+
+# Sequence of lambda values
+lambda_values <- fit$lambda
+
+# Dimensions of Lasso regression coefficients
+dim(coef(fit))
+
+# Plot coefficients on log of lambda values
+plot(fit, xvar = "lambda")
+
+# Lambda that corresponds to the lowest cross-validated MSE
+lambda_best <- fit$lambda.min
+
+# Model with the Best Lambda
+# Lasso regression coefficients
+coef_lambda_best <- predict(fit, s = lambda_best, type = "coefficients")
+
+# Non-zero coefficients
+non_zero_coefs <- coef_lambda_best[coef_lambda_best != 0]
+
+# Make predictions for records in the test set
+pred_lambda_best <- predict(fit, s = lambda_best, newx = x_test)
+
+# MSE in the test set
+MSE <- mean((y_test - pred_lambda_best)^2)
+MSE
+
+```
+
+
+
+```{r}
+
+options(scipen = 999)
+
+# Make predictions for the entire dataset
+lasso_pred <- predict(fit, newx = x, s = lambda_best)
+
+russell2 <- na.omit(russell)
+# Add the predictions as a new column to the original dataset
+russell2$lasso_pred <- lasso_pred
+```
+
+```{r}
+library(ggplot2)
+
+# Create a data frame with actual and predicted values
+plot_data <- data.frame(
+  actual = russell2$next_month_return,
+  s1 = russell2$lasso_pred
+)
+
+# Create the plot
+plot <- ggplot(plot_data, aes(x = actual, y = s1)) +
+  geom_point() +
+  geom_abline(slope = 0.00001, intercept = 0, color = "red") +
+  geom_abline(slope = 0, intercept = 0, color = "blue") + 
+  labs(x = "Actual Value", y = "Predicted Value") + 
+  theme_minimal() +  
+  theme(
+    panel.grid.major = element_blank(),  
+    panel.grid.minor = element_blank(),  
+    panel.border = element_rect(color = "black", fill = NA),  
+    axis.line = element_line(color = "black"), 
+    legend.position = "none" 
+  )
+
+# Calculate points in each quadrant
+upper_right <- sum(plot_data$s1 > 0 & plot_data$actual > 0)
+upper_left <- sum(plot_data$s1 > 0 & plot_data$actual < 0)
+lower_right <- sum(plot_data$s1 < 0 & plot_data$actual > 0)
+lower_left <- sum(plot_data$s1 < 0 & plot_data$actual < 0)
+
+# Create mini grid/table
+quadrant_table <- data.frame(
+  Quadrant = c("Upper Right", "Upper Left", "Lower Right", "Lower Left"),
+  Count = c(upper_right, upper_left, lower_right, lower_left)
+)
+
+# Print the plot and the quadrant table
+print(plot)
+print(quadrant_table)
+
+```
+
+
+
+## Random Forest
+```{r}
+library(rpart)
+library(rpart.plot)
+
+
+# Drop columns you want to exclude
+columns_to_drop <- c("date", "PERMNO", "COMNAM", "SICCD", "TICKER", "SHROUT", "PRC", "BIDLO", "ASKHI", "market_cap", "X1_month_ma", "X2_month_ma", "X3_month_ma", "RETX") 
+russell_ <- russell[, !(names(russell) %in% columns_to_drop)]
+
+# Drop rows with missing values
+russell_clean <- na.omit(russell_)
+
+# Set the seed 
+set.seed(86)
+    
+# Row numbers of the training set
+n_rows <- nrow(russell_clean)
+n_train <- round(0.7 * n_rows)
+train_index <- sample(1:n_rows, n_train)
+    
+# Training set
+train_russell <- russell_clean[train_index, ]
+    
+# Test set 
+test_russell <- russell_clean[-train_index, ]
+
+# Calculate lower and upper bounds for trimming outliers
+lower_bound <- quantile(train_russell$next_month_return, 0.025)  # Adjust percentile as needed
+upper_bound <- quantile(train_russell$next_month_return, 0.975)  # Adjust percentile as needed
+
+# Trim outliers from the training set
+train_russell <- train_russell[train_russell$next_month_return >= lower_bound & train_russell$next_month_return <= upper_bound, ]
+
+```
+
+
+
+```{r}
+# Regression tree with cp = 0.01
+rt <- rpart(next_month_return ~ ., data = train_russell, method = "anova", cp = 0.0001, maxdepth = 30)
+
+# Plot the tree
+prp(rt, type = 1, extra = 1, cex = 0.8)
+```
+
+
+```{r}
+# Predict
+rt_pred <- predict(rt, newdata = test_russell, type = "vector")
+
+# First six values 
+head(rt_pred)
+```
+
+
+```{r}
+mse_rt <- mean((test_russell$next_month_return - rt_pred)^2)
+mse_rt
+```
+
+
+```{r}
+
+# Plot the predicted values vs. actual values
+library(ggplot2)
+ggplot(data = test_russell, aes(x = next_month_return, y = rt_pred)) +
+  geom_point(color = "blue") +
+  geom_smooth(method = "lm", se = FALSE, color = "red") +
+  labs(x = "Actual Tomorrow Return", y = "Predicted Tomorrow Return",
+       title = "Predicted vs. Actual Tomorrow Return") +
+  geom_hline(yintercept = 0, color = "black") +
+  geom_vline(xintercept = 0, color = "black")
+
+```
+
+```{r}
+# Classify predicted values into positive and negative
+predicted_class <- ifelse(rt_pred > 0, "Positive", "Negative")
+actual_class <- ifelse(test_russell$next_month_return > 0, "Positive", "Negative")
+
+# Create the confusion matrix
+conf_matrix <- table(Actual = actual_class, Predicted = predicted_class)
+
+# Print the confusion matrix
+print(conf_matrix)
+```
+
+```{r}
+# Predict using the random forest model
+russell2$pred_forest <- predict(rt, newdata = russell2, type = "vector")
+
+# Check the structure of the dataframe to ensure the new column is added
+str(russell2)
+
+```
+## Logistic Regression
+```{r}
+library(caret)
+
+# Convert next_month_return to binary outcome (positive or negative)
+russell_clean$binary_return <- ifelse(russell_clean$next_month_return >= 0, "Positive", "Negative")
+
+
+# Set the seed for reproducibility
+set.seed(123)
+
+# Split the dataset into training and test sets
+train_index <- createDataPartition(russell_clean$binary_return, p = 0.7, list = FALSE)
+train_set <- russell_clean[train_index, ]
+test_set <- russell_clean[-train_index, ]
+
+# Set up cross-validation
+control <- trainControl(method = "cv",  # 10-fold cross-validation
+                        number = 10,
+                        classProbs = TRUE,  # Include class probabilities
+                        summaryFunction = twoClassSummary)  # Use two-class summary for binary outcome
+
+# Train logistic regression model with cross-validation
+logit_model <- train(binary_return ~ . - next_month_return, 
+                     data = train_set, 
+                     method = "glm", 
+                     family = binomial,
+                     trControl = control)
+
+# Make predictions on the test set
+predicted <- predict(logit_model, newdata = test_set, type = "raw")
+
+```
+
+```{r}
+# View model summary
+summary(logit_model)
+
+# View coefficients
+coef(logit_model)
+```
+
+```{r}
+# Make predictions on the entire dataset
+russell2$log_pred <- predict(logit_model, newdata = russell2, type = "raw")
+
+# View the updated dataset with predictions
+head(russell2)
+
+```
+```{r}
+# Categorize the predictions and actual values without adding a new column
+category_counts <- table(ifelse(russell2$log_pred == 'Positive' & russell2$next_month_return > 0, "Both Positive",
+                           ifelse(russell2$log_pred == 'Negative' & russell2$next_month_return < 0, "Both Negative",
+                                  ifelse(russell2$log_pred == 'Positive' & russell2$next_month_return < 0, "One Positive and One Negative",
+                                         ifelse(russell2$log_pred == 'Negative' & russell2$next_month_return > 0, "One Negative and One Positive", "Other")))))
+
+# View the counts
+category_counts
+
+```
+
+
+
+```{r}
+# Save the dataset with predictions to a CSV file
+write.csv(russell2, "monthly russell Trading Strategy v2.csv", row.names = FALSE)
+```
+
